@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 from torch.distributions.normal import Normal
-from torch.distributions.categorical import Categorical
+from torch.distributions.categorical import Categorical 		# lehet, hogy nem kell?
 
 def setup_logger_kwargs(exp_name):
     ymd_time = time.strftime("%Y-%m-%d_")
@@ -167,11 +167,13 @@ class PPOBuffer:
         path_slice = slice(self.path_start_idx, self.ptr)
         rews = np.append(self.rew_buf[path_slice], last_val)
         vals = np.append(self.val_buf[path_slice], last_val)
+
+        print(rews.shape)
+        print(vals.shape)
         
         # the next two lines implement GAE-Lambda advantage calculation
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
         self.adv_buf[path_slice] = scipy.signal.lfilter([1], [1, float(-self.gamma * self.lam)], deltas[::-1], axis=0)[::-1]
-        
         # the next line computes rewards-to-go, to be targets for the value function
         rews2 = rews[1:]
         self.ret_buf[path_slice] = scipy.signal.lfilter([1], [1, float(-self.gamma)], rews2[::-1], axis=0)[::-1]
@@ -190,7 +192,6 @@ class PPOBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
 
 class Actor(nn.Module):
-
     def _distribution(self, obs):
         raise NotImplementedError
 
@@ -399,7 +400,7 @@ def PPO(env_fn, steps_per_epoch=4000, epochs=30, gamma=0.99, clip_ratio=0.2, pi_
                     _, value, _ = ac.step(torch.as_tensor(obs.copy(), dtype=torch.float32))
                 else:
                     value = [0]
-                buf.finish_path(value[0])
+                buf.finish_path(value[0])   # advantage számítás
                 if terminal:
                     logger.store(EpRet=ep_ret, EpLen=ep_len)
                 obs, ep_ret, ep_len = env.reset(), 0, 0
