@@ -2,22 +2,17 @@ import numpy as np
 import gym
 import time
 from gym.spaces import Box, Discrete
-
 import os
 import os.path as osp, time, atexit, os
-
 import scipy
 from scipy import signal
-
 from skimage.color import rgb2gray
-
 import warnings
-
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 from torch.distributions.normal import Normal
-from torch.distributions.categorical import Categorical 		# lehet, hogy nem kell?
+from torch.distributions.categorical import Categorical
 
 def setup_logger_kwargs(exp_name):
     ymd_time = time.strftime("%Y-%m-%d_")
@@ -73,10 +68,26 @@ class Logger:
         fpath = osp.join(self.output_dir, fpath)
         fname = 'model' + ('%d'%itr if itr is not None else '') + '.pt'
         fname = osp.join(fpath, fname)
+
         os.makedirs(fpath, exist_ok=True)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             torch.save(self.pytorch_saver_elements, fname)
+
+    def optimizer_save(self, pi_opt, vf_opt):
+        fpath = 'pyt_save'
+        fpath = osp.join(self.output_dir, fpath)
+
+        fname = 'pi_opt.pt'
+        fname = osp.join(fpath, fname)
+        fname2 = 'vf_opt.pt'
+        fname2 = osp.join(fpath, fname2)
+
+        os.makedirs(fpath, exist_ok=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            torch.save(pi_opt, fname)
+            torch.save(vf_opt, fname2)
 
     def dump_tabular(self):
         vals = []
@@ -117,7 +128,6 @@ class EpochLogger(Logger):
         else:
             v = self.epoch_dict[key]
             vals = np.concatenate(v) if isinstance(v[0], np.ndarray) and len(v[0].shape)>0 else v
-            #stats = mpi_statistics_scalar(vals, with_min_and_max=with_min_and_max)
             mean = np.sum(vals) / len(vals)
             std = np.sum((vals - mean)**2) / len(vals)
             Max = np.max(vals)
@@ -168,23 +178,23 @@ class PPOBuffer:
         rews = np.append(self.rew_buf[path_slice], last_val)
         vals = np.append(self.val_buf[path_slice], last_val)
         
-        # the next two lines implement GAE-Lambda advantage calculation
+        # GAE-Lambda advantage estimate
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
         self.adv_buf[path_slice] = scipy.signal.lfilter([1], [1, float(-self.gamma * self.lam)], deltas[::-1], axis=0)[::-1]
-        # the next line computes rewards-to-go, to be targets for the value function
+        # value function tanítására
         rews2 = rews[1:]
         self.ret_buf[path_slice] = scipy.signal.lfilter([1], [1, float(-self.gamma)], rews2[::-1], axis=0)[::-1]
-        
+
         self.path_start_idx = self.ptr
 
     def get(self):
-        assert self.ptr == self.max_size    # buffer has to be full before you can get
+        assert self.ptr == self.max_size
         self.ptr, self.path_start_idx = 0, 0
 
         adv_buf_np = np.array(self.adv_buf, dtype=np.float32)
         adv_mean = np.sum(adv_buf_np) / len(adv_buf_np)
         adv_std = np.sum((adv_buf_np - adv_mean)**2) / len(adv_buf_np)
-        self.adv_buf = (self.adv_buf - adv_mean) / adv_std
+        self.adv_buf = (self.adv_buf - adv_mean) / adv_std					# mennyivel jobban tér el az átlagos eltéréstől az adott adat
         data = dict(obs=self.obs_buf, act=self.act_buf, ret=self.ret_buf, adv=self.adv_buf, logp=self.logp_buf)
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
 
@@ -195,10 +205,7 @@ class Actor(nn.Module):
     def _log_prob_from_distribution(self, pi, act):
         raise NotImplementedError
 
-    def forward(self, obs, act=None):
-        # Produce action distributions for given observations, and 
-        # optionally compute the log likelihood of given actions under
-        # those distributions.
+    def forward(self, obs, act=None):     # eloszlas letrehozasa adott megfigyelésre, logprobability szamitas adott cselekedetre
         pi = self._distribution(obs)
         logp_a = None
         if act is not None:
@@ -209,7 +216,7 @@ class GaussianActor(Actor):
 
     def __init__(self, act_dim):
         super().__init__()
-        log_std = -0.5 * np.ones(act_dim, dtype=np.float32)
+        log_std = -0.5 * np.ones(act_dim, dtype=np.float32)           # szoras
         self.log_std = torch.nn.Parameter(torch.as_tensor(log_std))
         
         self.mu_net = nn.Sequential(
@@ -230,12 +237,12 @@ class GaussianActor(Actor):
         )
 
     def _distribution(self, obs):
-        mu = self.mu_net(obs)			# mean
-        std = torch.exp(self.log_std)	# standard deviation
+        mu = self.mu_net(obs)			# mean - atlag
+        std = torch.exp(self.log_std)	# standard deviation - szoras
         return Normal(mu, std)
 
     def _log_prob_from_distribution(self, pi, act):
-        return pi.log_prob(act).sum(axis=-1)    # Last axis sum needed for Torch Normal distribution
+        return pi.log_prob(act).sum(axis=-1)
 
 class Critic(nn.Module):
     def __init__(self):
@@ -282,7 +289,7 @@ class ActorCritic(nn.Module):
         return self.step(obs)[0]
 
 def PPO(env_fn, steps_per_epoch=4000, epochs=30, gamma=0.99, clip_ratio=0.2, pi_lr=3e-4,
-        vf_lr=1e-3, train_pi_iters=45, train_v_iters=45, lam=0.97, max_ep_len=1000,
+        vf_lr=1e-3, train_pi_iters=80, train_v_iters=80, lam=0.97, max_ep_len=1000,
         target_kl=0.01, logger_kwargs=dict(), save_freq=2):
 
     logger = EpochLogger(**logger_kwargs)
@@ -290,13 +297,15 @@ def PPO(env_fn, steps_per_epoch=4000, epochs=30, gamma=0.99, clip_ratio=0.2, pi_
     np.random.seed()
 
     env = env_fn()
-    obs_dim = (96, 96)       # env.observation_space.shape (ha rgb adatot használnánk és nem grayscale-t)
+    obs_dim = (96, 96)       # env.observation_space.shape (ha rgb adatot hasznalnank és nem grayscale-t, ilyenkor meg kell valtoztatni tobb mindent)
     act_dim = env.action_space.shape
 
+    # Uj Training kezdeshez
     ac = ActorCritic(env.action_space)
 
     # Training folytatasahoz
-    #ac = torch.load('./data/ppo/ppo_s0/pyt_save/model.pt')
+    #ac_loaded = torch.load('./data/ppo/ppo_s0/pyt_save/model.pt')
+    #ac.load_state_dict(ac_loaded.state_dict())
 
     # PPO buffer
     buf = PPOBuffer(obs_dim, act_dim, steps_per_epoch, gamma, lam)
@@ -306,12 +315,12 @@ def PPO(env_fn, steps_per_epoch=4000, epochs=30, gamma=0.99, clip_ratio=0.2, pi_
         obs, act, adv, logp_old = data['obs'], data['act'], data['adv'], data['logp']
 
         # Policy loss
-        pi, logp = ac.pi(obs.view(4000,1,96,96), act)
+        pi, logp = ac.pi(obs.view(steps_per_epoch,1,96,96), act)
         ratio = torch.exp(logp - logp_old)
         clip_adv = torch.clamp(ratio, 1-clip_ratio, 1+clip_ratio) * adv
         loss_pi = -(torch.min(ratio * adv, clip_adv)).mean()
 
-        # Useful extra info
+        # Extra info
         approx_kl = (logp_old - logp).mean().item()
         ent = pi.entropy().mean().item()
         clipped = ratio.gt(1+clip_ratio) | ratio.lt(1-clip_ratio)
@@ -323,10 +332,17 @@ def PPO(env_fn, steps_per_epoch=4000, epochs=30, gamma=0.99, clip_ratio=0.2, pi_
     # Fuggveny a value loss szamitasra
     def compute_loss_v(data):
         obs, ret = data['obs'], data['ret']
-        return ((ac.value(obs.view(4000,1,96,96)) - ret)**2).mean()
+        return ((ac.value(obs.view(steps_per_epoch,1,96,96)) - ret)**2).mean()
 
+    # Uj training kezdeshez
     pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
     vf_optimizer = Adam(ac.value.parameters(), lr=vf_lr)
+
+    # Training folytatasahoz ez is kell
+    #pi_loaded = torch.load('./data/ppo/ppo_s0/pyt_save/pi_opt.pt')
+    #vf_loaded = torch.load('./data/ppo/ppo_s0/pyt_save/vf_opt.pt')
+    #pi_optimizer.load_state_dict(pi_loaded.state_dict())
+    #vf_optimizer.load_state_dict(vf_loaded.state_dict())
 
     logger.setup_pytorch_saver(ac)
 
@@ -370,12 +386,13 @@ def PPO(env_fn, steps_per_epoch=4000, epochs=30, gamma=0.99, clip_ratio=0.2, pi_
     obs, ep_ret, ep_len = env.reset(), 0, 0
     obs = rgb2gray(obs)
 
-    # Main loop: tapasztalatgyujtes + update/log
+    # Main loop: tapasztalatgyujtes -> update -> log
     for epoch in range(epochs):
+    	# tapasztalatgyujtes
         for t in range(steps_per_epoch):
             action, value, logp = ac.step(torch.as_tensor(obs.copy(), dtype=torch.float32))
-            
-            #env.render()
+
+            #env.render()                   # tapasztalatgyujtes kozben ha nyomon szeretnenk kovetni a tanulast
             next_obs, reward, done, _ = env.step(action[0])
             next_obs = rgb2gray(next_obs)
             ep_ret += reward
@@ -397,7 +414,7 @@ def PPO(env_fn, steps_per_epoch=4000, epochs=30, gamma=0.99, clip_ratio=0.2, pi_
                     _, value, _ = ac.step(torch.as_tensor(obs.copy(), dtype=torch.float32))
                 else:
                     value = [0]
-                buf.finish_path(value[0])   # advantage számítás
+                buf.finish_path(value[0])   # advantage szamitas
                 if terminal:
                     logger.store(EpRet=ep_ret, EpLen=ep_len)
                 obs, ep_ret, ep_len = env.reset(), 0, 0
@@ -405,10 +422,12 @@ def PPO(env_fn, steps_per_epoch=4000, epochs=30, gamma=0.99, clip_ratio=0.2, pi_
 
         if (epoch % save_freq == 0) or (epoch == epochs-1):
             logger.save_state({'env': env}, None)
+            logger.optimizer_save(pi_optimizer, vf_optimizer)
 
+        # update
         update()
 
-        # Log
+        # log
         logger.log_tabular('Epoch', epoch)
         logger.log_tabular('EpRet', with_min_and_max=True)
         logger.log_tabular('EpLen', average_only=True)

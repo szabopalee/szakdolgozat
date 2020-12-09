@@ -10,7 +10,7 @@ from torch.distributions.normal import Normal
 
 import matplotlib.pyplot as plt
 
-def imshow(img):
+def imshow(img):   # observation-rol kep keszitese
     plt.imshow(img)
     plt.show()
 
@@ -23,9 +23,6 @@ class Actor(nn.Module):
         raise NotImplementedError
 
     def forward(self, obs, act=None):
-        # Produce action distributions for given observations, and 
-        # optionally compute the log likelihood of given actions under
-        # those distributions.
         pi = self._distribution(obs)
         logp_a = None
         if act is not None:
@@ -57,12 +54,12 @@ class GaussianActor(Actor):
         )
 
     def _distribution(self, obs):
-        mu = self.mu_net(obs)           # mean
-        std = torch.exp(self.log_std)   # standard deviation
+        mu = self.mu_net(obs)
+        std = torch.exp(self.log_std)
         return Normal(mu, std)
 
     def _log_prob_from_distribution(self, pi, act):
-        return pi.log_prob(act).sum(axis=-1)    # Last axis sum needed for Torch Normal distribution
+        return pi.log_prob(act).sum(axis=-1)
 
 class Critic(nn.Module):
     def __init__(self):
@@ -96,11 +93,12 @@ class ActorCritic(nn.Module):
         self.value  = Critic()
 
     def step(self, obs):
-        obs = torch.unsqueeze(obs, 0)                  # obs megfelelo formara hozasa
+        obs = torch.unsqueeze(obs, 0)
         obs = torch.unsqueeze(obs, 0).view(1,1,96,96)
         with torch.no_grad():
             pi = self.pi._distribution(obs)
-            action = pi.sample()
+            action = pi.sample()            # az eloszlast mintavetelezzuk
+            #action = self.pi.mu_net(obs)   # mindig a varhato erteket valasztjuk
             logp_action = self.pi._log_prob_from_distribution(pi, action)
             value = self.value(obs)
         return action.numpy(), value.numpy(), logp_action.numpy()
@@ -112,26 +110,22 @@ env = gym.make('CarRacing-v0')
 model = torch.load('./data/ppo/ppo_s0/pyt_save/model.pt')
 model.eval()
 
-render = True
 n_episodes = 10
 
-print(env.action_space)
-print(env.observation_space)
 rewards = []
 for i_episode in range(n_episodes):
     observation = env.reset()
     observation = rgb2gray(observation)
     sum_reward = 0
     for t in range(1000):
-        if render:
-            #imshow(observation)
-            env.render()
-        # [steering, gas, brake]
+        #imshow(observation)
+        env.render()
+        
         action, value, logp = model.step(torch.as_tensor(observation.copy(), dtype=torch.float32))
-        # observation is 96x96x3
+        
         observation, reward, done, _ = env.step(action[0])
         observation = rgb2gray(observation)
-        # break
+        
         sum_reward += reward
         if(t % 100 == 0):
             print(t)
