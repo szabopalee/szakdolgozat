@@ -96,15 +96,20 @@ class CARLAEnv(gym.Env):
 
   def __init__(self):
     super(CARLAEnv, self).__init__()
+
     self.client = carla.Client('localhost', 2000)
     self.client.set_timeout(2.0)
     self.world = World(client.get_world())
+    self.settings = self.world.get_settings()
+	self.settings.synchronous_mode = True
+    self.settings.fixed_delta_seconds = 0.05            # Mennyi legyen?
+	self.world.apply_settings(settings)
 
     self.action_space = spaces.Box(np.array([0,-1,0]), np.array([+1,+1,+1]), dtype=np.float32)     # Legyen fékezés vagy ne?
     self.observation_space = spaces.Box(low=0, high=255, shape=(IM_HEIGHT, IM_WIDTH, N_CHANNELS), dtype=np.uint8)
 
   def step(self, action):
-    # TODO
+    # self.world.tick() <- ez kell majd
     return observation, reward, done, info
   def reset(self):
     # TODO
