@@ -73,17 +73,11 @@ class World(object):
         print('done.')
 
     def process_img(image):
-        i = np.array(image.raw_data)
-        i2 = i.reshape((IM_WIDTH, IM_HEIGHT, 4))
-        i3 = i2[:, :, :3]
-        i3 = i3[:,:,::-1]
-
-        # Pygame megjelenites
-        #surface = pygame.surfarray.make_surface(i3.swapaxes(0,1))
-        #display.blit(surface, (0,0))
-        #pygame.display.flip()
-
-        return i3/255
+        self.img = np.array(image.raw_data)
+        self.img = self.img.reshape((IM_WIDTH, IM_HEIGHT, 4))
+        self.img = self.img[:, :, :3]
+        self.img = self.img[:,:,::-1]
+        return self.img
 
     def on_collission(weak_self, event):
         self = weak_self()
@@ -107,6 +101,9 @@ class CARLAEnv(gym.Env):
 
     self.action_space = spaces.Box(np.array([0,-1,0]), np.array([+1,+1,+1]), dtype=np.float32)     # Legyen fékezés vagy ne?
     self.observation_space = spaces.Box(low=0, high=255, shape=(IM_HEIGHT, IM_WIDTH, N_CHANNELS), dtype=np.uint8)
+	
+    pygame.init()
+    self.display = pygame.display.set_mode((IM_WIDTH, IM_HEIGHT), pygame.HWSURFACE | pygame.DOUBLEBUF)
 
   def step(self, action):
     # self.world.tick() <- ez kell majd
@@ -115,17 +112,13 @@ class CARLAEnv(gym.Env):
     # TODO
     return observation
   def render(self, mode='human'):
-    # TODO
+    # Pygame megjelenites
+    surface = pygame.surfarray.make_surface(self.world.img.swapaxes(0,1))
+    self.display.blit(surface, (0,0))
+    pygame.display.flip()
+
   def close (self):
     # TODO
-
-
-# Megjeleniteshez pygame
-#pygame.init()
-
-#display = pygame.display.set_mode(
-#    (IM_WIDTH, IM_HEIGHT),
-#    pygame.HWSURFACE | pygame.DOUBLEBUF)
 
 env = CARLAEnv()
 
@@ -133,12 +126,12 @@ model = PPO2(CnnPolicy, env, verbose=1, )
 model.learn(total_timesteps=25000)
 
 # Saving
-model.save("ppo2_cartpole")
+model.save("ppo2_CARLA")
 
 del model # remove to demonstrate saving and loading
 
 # Loading
-model = PPO2.load("ppo2_cartpole")
+model = PPO2.load("ppo2_CARLA")
 
 obs = env.reset()
 while True:
