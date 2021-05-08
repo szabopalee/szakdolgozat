@@ -35,6 +35,7 @@ class World(object):
         self.restart()
     def restart(self):
         self.destroy_actors()
+        self.collision_happened = False
 
         blueprint_library = self.world.get_blueprint_library()
 
@@ -43,9 +44,7 @@ class World(object):
 
         spawn_point = random.choice(self.world.get_map().get_spawn_points())   # random spawn point
 
-        vehicle = self.world.spawn_actor(blueprint, spawn_point)
-        #vehicle.apply_control(carla.VehicleControl(throttle=1.0, steer=0.0))
-
+        self.vehicle = self.world.spawn_actor(blueprint, spawn_point)
         self.actor_list.append(vehicle)
 
         # kamera 
@@ -54,16 +53,20 @@ class World(object):
         blueprint2.set_attribute('image_size_y', str(IM_HEIGHT))
         blueprint2.set_attribute('fov', '110')
         spawn_point = carla.Transform(carla.Location(x=2.5, z=0.7))
-        self.sensor = self.world.spawn_actor(blueprint2, spawn_point, attach_to=vehicle)
+        self.sensor = self.world.spawn_actor(blueprint2, spawn_point, attach_to=self.vehicle)
         self.actor_list.append(self.sensor)
         self.sensor.listen(lambda data: World.process_img(data))
         
         #utkozes szenzor
         blueprint3 = blueprint_library.find('sensor.other.collision')
-        self.collision_sensor = self.world.spawn_actor(blueprint3, carla.Transform(), attach_to=vehicle)
+        self.collision_sensor = self.world.spawn_actor(blueprint3, carla.Transform(), attach_to=self.vehicle)
         self.actor_list.append(self.collision_sensor)
         weak_self = weakref.ref(self)
         self.collision_sensor.listen(lambda event: World.on_collission(weak_self, event))
+
+        self.time_step = 0
+
+
 
     def destroy_actors(self):
         print('destroying actors')
@@ -83,7 +86,15 @@ class World(object):
         self = weak_self()
         if not self:
             return
-        self.restart()
+        self.collision_happened = True
+
+    def get_reward(self):         # TODO
+        v = self.vehicle.get_velocity()
+        speed = np.sqrt(v.x**2 + v.y**2)
+        r_speed = -abs(speed - 13.9)     # 50 km/h ~ 13.9 m/s
+
+    def terminal(self):           # TODO
+
 
 class CARLAEnv(gym.Env):
   metadata = {'render.modes': ['human']}
@@ -99,17 +110,26 @@ class CARLAEnv(gym.Env):
     self.settings.fixed_delta_seconds = 0.05            # Mennyi legyen?
 	self.world.apply_settings(settings)
 
-    self.action_space = spaces.Box(np.array([0,-1,0]), np.array([+1,+1,+1]), dtype=np.float32)     # Legyen fékezés vagy ne?
+    self.action_space = spaces.Box(np.array([0,-1]), np.array([+1,+1]), dtype=np.float32)
     self.observation_space = spaces.Box(low=0, high=255, shape=(IM_HEIGHT, IM_WIDTH, N_CHANNELS), dtype=np.uint8)
 	
     pygame.init()
     self.display = pygame.display.set_mode((IM_WIDTH, IM_HEIGHT), pygame.HWSURFACE | pygame.DOUBLEBUF)
 
   def step(self, action):
-    # self.world.tick() <- ez kell majd
-    return observation, reward, done, info
+    acc = action[0]
+    steer = action[1]
+
+    self.world.vehicle.apply_control(carla.VehicleControl(throttle=acc, steer=steer))
+    self.world.tick()
+
+    self.time_step = self.time_step + 1
+
+    return self.world.img, self.world.get_reward(), self.world.terminal(), info
+
   def reset(self):
-    # TODO
+    self.world.destroy_actors()
+    self.world.restart()
     return observation
   def render(self, mode='human'):
     # Pygame megjelenites
